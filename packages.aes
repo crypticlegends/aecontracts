@@ -1,0 +1,226 @@
+contract NonFungibleFull =
+  
+  type token_id = int
+  //TODO: transfer all other attributes from attributes_list file when the final list is approved, instead of attr1
+  record character_type = {
+    name: string,
+    attr1: int }
+  type character = character_type
+
+  stateful entrypoint init: (string, string) => ()
+  entrypoint get_caller: () => address
+  entrypoint name: () => string
+  entrypoint symbol: () =>  string
+  entrypoint balance_of: address => int
+  entrypoint owner_of: token_id => address
+  entrypoint get_approved: token_id => address
+  entrypoint is_approved_for_all: (address, address) => bool
+  entrypoint get_token_uri: token_id => string
+  stateful entrypoint set_token_uri: (token_id, string) => ()
+  entrypoint get_token_character: token_id => character
+  stateful entrypoint mint: (token_id, address, string, int) => ()
+  stateful entrypoint burn: token_id => ()
+  stateful entrypoint approve: (int, address) => ()
+  stateful entrypoint transfer_from: (address, address, token_id) => ()
+  stateful entrypoint set_approval_for_all: (address, bool) => ()
+
+
+
+contract PackagePresale =
+  
+  type packageIndexList  = list(int)
+  type packages          = map(int, package)
+  //we have 4 Types of packages, 4 different rarities: Common, Rare, Epic and Legendary
+  type packageTypeIndex  = string
+  type ownership         =   map(address, packageIndexList)
+  //Stores the indexes of NTF tokens
+  type itemsList         = list(int)
+
+  //TODO: Finish implementing events, not working atm
+  // datatype event = LogBid(indexed address, indexed int)
+  //   | LogWithdrawal(indexed address, indexed int)
+  //   | LogCanceled(string)
+
+  record package =
+    { items          : itemsList,
+      opened         : bool,
+      owner          : address,
+      //TODO: re-Consider if we need this available field
+      available      : bool }
+  
+  record state =
+    { packageTypes        : map(packageTypeIndex, packages),
+    ownershipTypes        : map(packageTypeIndex, ownership),
+    ownershipOfItems      : map(address, itemsList),
+    packageTotalTypes     : map(packageTypeIndex, int),
+    packageLeftTypes      : map(packageTypeIndex, int),
+    packageTypesCost      : map(packageTypeIndex, int),
+    //Address of the contract used for NFTs
+    nftContract           : NonFungibleFull }
+
+
+  entrypoint init (nft: NonFungibleFull) =
+    { 
+      packageTypes      = {["Common"] = {}, ["Rare"]= {}, ["Epic"]= {}, ["Legendary"]= {}},
+      ownershipTypes    = {["Common"] = {}, ["Rare"]= {}, ["Epic"]= {}, ["Legendary"]= {}},
+      ownershipOfItems  = {},
+      packageTotalTypes = {["Common"] = 0, ["Rare"]= 0, ["Epic"]= 0, ["Legendary"]= 0},
+      packageLeftTypes  = {["Common"] = 0, ["Rare"]= 0, ["Epic"]= 0, ["Legendary"]= 0},
+      packageTypesCost  = {["Common"] = 10, ["Rare"]= 20, ["Epic"]= 50, ["Legendary"]= 100},
+      nftContract       = nft }
+
+  entrypoint getNftContract(): NonFungibleFull =
+    state.nftContract
+  
+  stateful entrypoint setNftContract(newNftContract: NonFungibleFull) =
+    onlyContractOwner()
+    put(state{nftContract = newNftContract })
+
+  entrypoint getPackagesCost(): map(packageTypeIndex, int) = 
+    state.packageTypesCost
+  
+
+  entrypoint getPackageCost(rarity: packageTypeIndex) : int =
+    switch(Map.lookup(rarity, state.packageTypesCost))
+      Some(x) => x
+      None    => abort("Undefined rarity")
+
+
+  //returns Old cost value
+  stateful entrypoint setPackageCost(rarity: packageTypeIndex, cost : int) : int =
+    onlyContractOwner()
+    let oldPackageCost = switch(Map.lookup(rarity, state.packageTypesCost))
+      Some(x) => x
+      None    => abort("Undefined rarity")
+    put(state{ packageTypesCost[rarity] = cost })
+    oldPackageCost
+
+  
+  entrypoint getPackage(rarity: packageTypeIndex, index : int) : package =
+    let packageList = switch(Map.lookup(rarity, state.packageTypes))
+      Some(x) => x
+      None    => abort("Undefined rarity")
+    
+    switch(Map.lookup(index, packageList))
+      None    => abort("There was no package with this index registered.")
+      Some(y) => y
+
+
+  //what packages does one address own
+  entrypoint getOwnedPackages(rarity: packageTypeIndex, owner : address) : packageIndexList =
+    let ownershipList = switch(Map.lookup(rarity, state.ownershipTypes))
+      Some(x) => x
+      None    => abort("Undefined rarity")
+    ownershipList[owner = []]
+  
+
+   //what packages does caller address own
+  entrypoint getCallersOwnedPackages(rarity: packageTypeIndex) : packageIndexList =
+    getOwnedPackages(rarity, Call.origin)
+
+
+  stateful entrypoint registerPackage(rarity: packageTypeIndex) =
+    onlyContractOwner()
+    let packageCost = getPackageCost(rarity: packageTypeIndex)
+    
+    let package = {
+            available = true,
+            items = [], 
+            opened = false,
+            owner = Contract.creator}
+    let index = getPackagesLength(rarity) + 1
+    let packagesLeft = getPackagesLeft(rarity)
+    put(state{ packageTypes[rarity][index] = package, packageTotalTypes[rarity] = index, packageLeftTypes[rarity] = packagesLeft + 1 })
+
+
+  stateful entrypoint registerPackageItems(rarity: packageTypeIndex, index: int, items': itemsList) =
+    onlyContractOwner()
+    
+    let package = getPackage(rarity, index)
+    let packageNew = package{items = items'}
+    
+    put(state{ packageTypes[rarity][index] = packageNew})
+
+  stateful entrypoint registerPackageItem(rarity: packageTypeIndex, index: int, item: int) =
+    onlyContractOwner()
+    
+    let package = getPackage(rarity, index)
+    let itemsNew = item :: package.items
+    let packageNew = package{items = itemsNew}
+    
+    put(state{ packageTypes[rarity][index] = packageNew})
+
+
+  entrypoint getPackagesLength(rarity: packageTypeIndex) : int =
+    switch(Map.lookup(rarity, state.packageTotalTypes))
+      Some(x) => x
+      None    => abort("Undefined rarity")
+
+
+  entrypoint getPackagesLeft(rarity: packageTypeIndex) =
+    switch(Map.lookup(rarity, state.packageLeftTypes))
+      Some(x) => x
+      None    => abort("Undefined rarity")
+
+  entrypoint getPackagesLeftTypes():map(packageTypeIndex, int) =
+    state.packageLeftTypes
+
+  stateful entrypoint buyPackage(rarity: packageTypeIndex) =
+    //find the first next available package of rarty
+    let packagesLeft = getPackagesLeft(rarity)
+    let packagesTotal = getPackagesLength(rarity)
+    require(packagesLeft > 0, "Packages sold out")
+    let index = packagesTotal - packagesLeft + 1
+
+    let package = getPackage(rarity, index)
+    let packageCost = getPackageCost(rarity)
+    if (!package.available) abort("Package already bought.") // This could be ommited now
+    if (packageCost > Call.value) abort("Not enough funds sent")
+    
+    Chain.spend(Contract.creator, packageCost)
+    
+    let packageUpdated = package{available = false, owner = Call.origin}
+    let owned = index::getOwnedPackages(rarity, Call.origin)
+    transferPackageItems(package.items, Call.origin)
+    put(state{ packageTypes[rarity][index] = packageUpdated , ownershipTypes[rarity][Call.origin] = owned, packageLeftTypes[rarity] = packagesLeft - 1 })
+  
+  
+  stateful entrypoint openPackage(rarity: packageTypeIndex, index: int) =
+    let package = getPackage(rarity, index)
+    require(package.owner == Call.origin, "Only package owner can open a package")
+
+    let ownedItems = switch(Map.lookup(Call.origin, state.ownershipOfItems))
+      Some(x) => package.items ++ x
+      None => package.items
+    //mark package as opened
+    put(state{ packageTypes[rarity][index] = package{opened = true}, ownershipOfItems[Call.origin] = ownedItems})
+  
+
+  entrypoint getCallersOwnedItems(): itemsList =
+    state.ownershipOfItems[Call.origin = []]
+  
+  //PRIVATE FUNCTIONS
+
+  //contacts the NFT contract and transfers ownership of all NFT in the package
+  private function transferPackageItems(items: itemsList, newOwner: address) = 
+    loopFunction(transferItem, newOwner, items)
+  
+  //https://github.com/aeternity/protocol/blob/master/contracts/sophia.md#calling-other-contracts
+  //we have to use the Contract.creator account to mint all the characters on the nft contract, to be approved on nft contract
+  private function transferItem(item: int, newOwner: address) : int =
+    state.nftContract.transfer_from(Contract.creator, newOwner, item)
+    item
+
+  //recursively loop through the list
+  private function loopFunction(f : (int, address) => int, adr: address, l : list(int)) : list(int) =
+    switch(l)
+      [] => []
+      e :: l' => f(e, adr) :: loopFunction(f, adr, l')
+
+  //Test purposes, get our $$$
+  entrypoint getBalance() : int =
+    onlyContractOwner()
+    Contract.balance
+
+  function onlyContractOwner() =
+    if (Contract.creator != Call.origin) abort("Only owner can initiate the function")
